@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>松鼠大作战 - 原型（单文件）</title>
+  <style>
+    :root{
+      --bg:#f3f7ef;
+      --panel:#ffffff;
+      --accent:#8fbf3f;
+      --text:#2b2b2b;
+      --muted:#666;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial}
+    #container{display:flex;flex-direction:column;min-height:100vh;background:linear-gradient(180deg,#eaf6d8,#d7f0c9);color:var(--text);align-items:center;padding:16px}
+    header{margin-bottom:8px}
+    h1{margin:0;font-size:20px}
+    main{flex:1;display:flex;align-items:center;justify-content:center;width:100%}
+    canvas{background:linear-gradient(180deg,#c8f0a3,#8fd04a);border:4px solid #6aa22c;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.12)}
+    #ui{position: absolute; top:80px; left:24px; z-index:5}
+    .panel{background:var(--panel);padding:12px;border-radius:8px;box-shadow:0 6px 14px rgba(0,0,0,0.08);min-width:200px}
+    .panel-inner{display:flex;flex-direction:column;gap:8px}
+    .panel h2{margin:0 0 6px 0}
+    .hidden{display:none}
+    .hint{font-size:12px;color:var(--muted);margin:4px 0}
+    .scoreboard p{margin:4px 0;font-weight:600}
+    .hud-row{display:flex;gap:16px;align-items:center}
+    .hud-row div{background:rgba(255,255,255,0.9);padding:6px 10px;border-radius:6px;font-weight:700}
+    footer{margin-top:12px;color:var(--muted);font-size:13px}
+    button{background:var(--accent);border:none;color:white;padding:8px 12px;border-radius:6px;cursor:pointer;font-weight:700}
+    button:hover{opacity:0.95}
+    label{display:flex;flex-direction:column;font-size:13px}
+    select{margin-top:6px;padding:6px;border-radius:6px;border:1px solid #ddd}
+    @media (max-width:980px){
+      canvas{width:92vw;height:61.333vw} /* keep 3:2 ratio */
+      #ui{position: static;margin-top:8px}
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <header>
+      <h1>松鼠大作战（原型）</h1>
+    </header>
+
+    <div id="ui">
+      <div id="menu" class="panel">
+        <div class="panel-inner">
+          <h2>开始游戏</h2>
+          <label>游戏时长：<select id="duration-select">
+            <option value="30">30 秒</option>
+            <option value="45">45 秒</option>
+            <option value="60" selected>60 秒</option>
+            <option value="90">90 秒</option>
+          </select></label>
+          <label>AI 难度（对手数量）：<select id="bots-select">
+            <option value="1">少 (1)</option>
+            <option value="2" selected>中 (2)</option>
+            <option value="3">多 (3)</option>
+          </select></label>
+          <button id="start-btn">开始游戏</button>
+          <p class="hint">控制：方向键 / WASD 移动，空格 冲刺</p>
+          <div class="scoreboard">
+            <p>最高分: <span id="highscore">0</span></p>
+            <p>最近得分: <span id="lastscore">—</span></p>
+          </div>
+        </div>
+      </div>
+
+      <div id="hud" class="panel hidden">
+        <div class="hud-row">
+          <div>得分: <span id="score">0</span></div>
+          <div>时间: <span id="timer">0</span>s</div>
+          <div>生命: <span id="hp">3</span></div>
+        </div>
+      </div>
+
+      <div id="gameover" class="panel hidden">
+        <div class="panel-inner">
+          <h2>游戏结束</h2>
+          <p>得分: <span id="final-score">0</span></p>
+          <p>最高分: <span id="final-highscore">0</span></p>
+          <button id="restart-btn">再来一次</button>
+          <button id="back-btn">返回主菜单</button>
+        </div>
+      </div>
+    </div>
+
+    <main>
+      <canvas id="gameCanvas" width="900" height="600"></canvas>
+    </main>
+
+    <footer>
+      <p>原型版 · 保存高分到 localStorage</p>
+    </footer>
+  </div>
+
+  <script>
+    // 单文件版：松鼠大作战（原型）
+    (() => {
+      // ---------- 配置 ----------
+      const CONFIG = {
+        canvasWidth: 900,
+        canvasHeight: 600,
+        playerRadius: 18,
+        botRadius: 16,
+        nutRadius: 8,
+        nutSpawnInterval: 1200, // ms
+        maxNuts: 18,
+        botCountDefault: 2,
+        startHP: 3,
+        dashSpeed: 420,
+        moveSpeed: 180,
+        dashDuration: 0.18, // seconds
+        dashCooldown: 1.2, // seconds
+      };
+
+      // ---------- 工具 ----------
+      function rand(min, max) { return Math.random() * (max - min) + min; }
+      function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+      function dist(a, b) { const dx = a.x - b.x, dy = a.y - b.y; return Math.hypot(dx, dy); }
+
+      // ---------- DOM ----------
+      const canvas = document.getElementById('gameCanvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = CONFIG.canvasWidth;
+      canvas.height = CONFIG.canvasHeight;
+
+      const ui = {
+        menu: document.getElementById('menu'),
+        startBtn: document.getElementById('start-btn'),
+        botsSelect: document.getElementById('bots-select'),
+        durationSelect: document.getElementById('duration-select'),
+        hud: document.getElementById('hud'),
+        scoreEl: document.getElementById('score'),
+        timerEl: document.getElementById('timer'),
+        hpEl: document.getElementById('hp'),
+        highscoreEl: document.getElementById('highscore'),
+        lastscoreEl: document.getElementById('lastscore'),
+        gameover: document.getElementById('gameover'),
+        finalScoreEl: document.getElementById('final-score'),
+        finalHighscoreEl: document.getElementById('final-highscore'),
+        restartBtn: document.getElementById('restart-btn'),
+        backBtn: document.getElementById('back-btn'),
+      };
+
+      // ---------- Storage ----------
+      const STORAGE = {
+        KEY_HIGH: 'squirrel_highscore_v1',
+        KEY_LAST: 'squirrel_lastscore_v1',
+        getHigh(){ return Number(localStorage.getItem(this.KEY_HIGH) || 0) },
+        setHigh(v){ localStorage.setItem(this.KEY_HIGH, String(v)) },
+        setLast(v){ localStorage.setItem(this.KEY_LAST, String(v)) },
+        getLast(){ return Number(localStorage.getItem(this.KEY_LAST) || 0) }
+      };
+      ui.highscoreEl.textContent = STORAGE.getHigh();
+      ui.lastscoreEl.textContent = STORAGE.getLast() || '—';
+
+      // ---------- Input ----------
+      const input = { left:false,right:false,up:false,down:false,dash:false };
+      window.addEventListener('keydown', e => {
+        if (e.code === 'ArrowLeft'||e.key==='a'||e.key==='A') input.left = true;
+        if (e.code === 'ArrowRight'||e.key==='d'||e.key==='D') input.right = true;
+        if (e.code === 'ArrowUp'||e.key==='w'||e.key==='W') input.up = true;
+        if (e.code === 'ArrowDown'||e.key==='s'||e.key==='S') input.down = true;
+        if (e.code === 'Space') input.dash = true;
+      });
+      window.addEventListener('keyup', e => {
+        if (e.code === 'ArrowLeft'||e.key==='a'||e.key==='A') input.left = false;
+        if (e.code === 'ArrowRight'||e.key==='d'||e.key==='D') input.right = false;
+        if (e.code === 'ArrowUp'||e.key==='w'||e.key==='W') input.up = false;
+        if (e.code === 'ArrowDown'||e.key==='s'||e.key==='S') input.down = false;
+        if (e.code === 'Space') input.dash = false;
+      });
+
+      // ---------- Entities ----------
+      class Nut {
+        constructor(x,y){ this.x=x;this.y=y;this.radius=CONFIG.nutRadius;this.collected=false }
+        draw(ctx){ ctx.fillStyle='#ffde59'; ctx.beginPath(); ctx.arc(this.x,this.y,this.radius,0,Math.PI*2); ctx.fill();
+          ctx.fillStyle='#b88600'; ctx.fillRect(this.x-2,this.y-4,4,8);
+        }
+      }
+
+      class Squirrel {
+        constructor(x,y,r,color){
+          this.x=x;this.y=y;this.vx=0;this.vy=0;this.radius=r;this.color=color;
+          this.score=0; this.hp = CONFIG.startHP;
+          this.dashRemaining=0; this.dashCooldown=0;
+        }
+        applyDamage(n=1){ this.hp = Math.max(0,this.hp - n); }
+        draw(ctx){
+          // body
+          ctx.fillStyle = this.color;
+          ctx.beginPath(); ctx.arc(this.x,this.y,this.radius,0,Math.PI*2); ctx.fill();
+          // eye
+          ctx.fillStyle='#000';
+          ctx.beginPath(); ctx.arc(this.x+this.radius*0.25, this.y-this.radius*0.25, this.radius*0.18,0,Math.PI*2); ctx.fill();
+        }
+      }
+
+      class Player extends Squirrel {
+        constructor(x,y){ super(x,y,CONFIG.playerRadius,'#8b5a2b'); this.speed=CONFIG.moveSpeed; }
+        update(dt){
+          // movement
+          let mx = 0, my = 0;
+          if (input.left) mx -= 1; if (input.right) mx += 1;
+          if (input.up) my -= 1; if (input.down) my += 1;
+          const len = Math.hypot(mx,my) || 0;
+          let nx = 0, ny = 0;
+          if (len > 0){ nx = mx/len; ny = my/len; }
+
+          // dash
+          if (input.dash && this.dashCooldown <= 0 && (nx!==0 || ny!==0)){
+            this.dashRemaining = CONFIG.dashDuration;
+            this.dashCooldown = CONFIG.dashCooldown;
+          }
+
+          const isDashing = this.dashRemaining > 0;
+          const speed = isDashing ? CONFIG.dashSpeed : CONFIG.moveSpeed;
+
+          this.vx = nx * speed;
+          this.vy = ny * speed;
+
+          this.x += this.vx * dt;
+          this.y += this.vy * dt;
+
+          if (this.dashRemaining > 0){ this.dashRemaining = Math.max(0, this.dashRemaining - dt); }
+          if (this.dashCooldown > 0){ this.dashCooldown = Math.max(0, this.dashCooldown - dt); }
+
+          // clamp inside canvas
+          this.x = clamp(this.x, this.radius, canvas.width - this.radius);
+          this.y = clamp(this.y, this.radius, canvas.height - this.radius);
+        }
+      }
+
+      class Bot extends Squirrel {
+        constructor(x,y,id){
+          super(x,y,CONFIG.botRadius,'#b35a3b'); this.id=id; this.state='wander';
+          this.speed = CONFIG.moveSpeed * 0.9;
+          this.target = null;
+          this.wanderDir = {x: rand(-1,1), y: rand(-1,1)};
+          this.wanderTimer = rand(0.5,2);
+        }
+        chooseTarget(nuts, player){
+          // try to pick nearest nut, but occasionally chase player if close
+          const nearPlayer = dist(this, player) < 100;
+          if (nearPlayer && Math.random() < 0.5){ this.target = {type:'player', ref:player}; return; }
+          if (nuts.length === 0){ this.target = null; return; }
+          let best = null, bestD = 1e9;
+          for (const n of nuts){ const d = dist(this,n); if (d < bestD){ bestD=d; best=n; } }
+          this.target = best;
+        }
+        update(dt, nuts, player){
+          // decide
+          if (!this.target || (this.target.type==='player' && dist(this,this.target.ref)>200)) this.chooseTarget(nuts, player);
+
+          let dx=0, dy=0;
+          if (this.target && typeof this.target.x !== 'undefined'){ dx = this.target.x - this.x; dy = this.target.y - this.y; }
+          else if (this.target && this.target.type==='player'){ dx = this.target.ref.x - this.x; dy = this.target.ref.y - this.y; }
+          else {
+            // wander
+            this.wanderTimer -= dt;
+            if (this.wanderTimer <= 0){ this.wanderDir = {x: rand(-1,1), y: rand(-1,1)}; this.wanderTimer = rand(0.7,2.2); }
+            dx = this.wanderDir.x; dy = this.wanderDir.y;
+          }
+          const len = Math.hypot(dx,dy) || 1;
+          dx /= len; dy /= len;
+          this.vx = dx * this.speed;
+          this.vy = dy * this.speed;
+          this.x += this.vx * dt;
+          this.y += this.vy * dt;
+          // clamp
+          this.x = clamp(this.x, this.radius, canvas.width - this.radius);
+          this.y = clamp(this.y, this.radius, canvas.height - this.radius);
+        }
+      }
+
+      // ---------- Game ----------
+      class Game {
+        constructor(){
+          this.state = 'menu'; // menu, playing, over
+          this.player = null;
+          this.bots = [];
+          this.nuts = [];
+          this.lastNutSpawn = 0;
+          this.score = 0;
+          this.startTime = 0;
+          this.duration = 60; // seconds
+          this.remaining = 0;
+          this.lastTime = performance.now();
+          this.loopId = null;
+          this.initUI();
+        }
+
+        initUI(){
+          ui.startBtn.addEventListener('click', () => {
+            const botsCount = Number(ui.botsSelect.value);
+            const dur = Number(ui.durationSelect.value);
+            this.start(botsCount, dur);
+          });
+          ui.restartBtn.addEventListener('click', () => {
+            const botsCount = Number(ui.botsSelect.value);
+            const dur = Number(ui.durationSelect.value);
+            this.start(botsCount, dur);
+            ui.gameover.classList.add('hidden');
+          });
+          ui.backBtn.addEventListener('click', ()=> {
+            this.toMenu();
+          });
+        }
+
+        toMenu(){
+          this.state = 'menu';
+          ui.menu.classList.remove('hidden');
+          ui.hud.classList.add('hidden');
+          ui.gameover.classList.add('hidden');
+        }
+
+        start(botCount = CONFIG.botCountDefault, duration = 60){
+          // setup
+          this.state = 'playing';
+          ui.menu.classList.add('hidden');
+          ui.gameover.classList.add('hidden');
+          ui.hud.classList.remove('hidden');
+
+          this.player = new Player(canvas.width/2, canvas.height/2);
+          this.bots = [];
+          for (let i=0;i<botCount;i++){
+            this.bots.push(new Bot(rand(60, canvas.width-60), rand(60, canvas.height-60), i));
+          }
+          this.nuts = [];
+          this.lastNutSpawn = 0;
+          this.score = 0;
+          this.startTime = performance.now();
+          this.duration = duration;
+          this.remaining = duration;
+          this.lastTime = performance.now();
+
+          // start loop
+          if (this.loopId) cancelAnimationFrame(this.loopId);
+          this.loop();
+        }
+
+        end(){
+          this.state = 'over';
+          ui.hud.classList.add('hidden');
+          ui.gameover.classList.remove('hidden');
+          ui.finalScoreEl.textContent = String(this.score);
+          const high = STORAGE.getHigh();
+          if (this.score > high){ STORAGE.setHigh(this.score); ui.finalHighscoreEl.textContent = String(this.score); ui.highscoreEl.textContent = String(this.score); }
+          else ui.finalHighscoreEl.textContent = String(high);
+          STORAGE.setLast(this.score);
+          ui.lastscoreEl.textContent = String(this.score);
+        }
+
+        spawnNut(){
+          if (this.nuts.length >= CONFIG.maxNuts) return;
+          // place not too close to others or edges
+          for (let tries=0; tries<20; tries++){
+            const x = rand(24, canvas.width - 24);
+            const y = rand(24, canvas.height - 24);
+            const ok = this.nuts.every(n => Math.hypot(n.x-x,n.y-y) > 22) && dist({x,y}, this.player) > 40;
+            if (ok){ this.nuts.push(new Nut(x,y)); break; }
+          }
+        }
+
+        update(dt){
+          if (this.state !== 'playing') return;
+          // timer
+          const elapsed = (performance.now() - this.startTime)/1000;
+          this.remaining = Math.max(0, this.duration - elapsed);
+          if (this.remaining <= 0){ this.end(); return; }
+
+          // spawn nuts periodically
+          this.lastNutSpawn += dt*1000;
+          if (this.lastNutSpawn > CONFIG.nutSpawnInterval){
+            this.spawnNut();
+            this.lastNutSpawn = 0;
+          }
+
+          // update player
+          this.player.update(dt);
+
+          // update bots
+          for (const b of this.bots) b.update(dt, this.nuts, this.player);
+
+          // collisions: player <-> nuts
+          for (let i=this.nuts.length-1;i>=0;i--){
+            const n = this.nuts[i];
+            if (dist(this.player, n) < this.player.radius + n.radius){
+              this.nuts.splice(i,1);
+              this.score += 1;
+              this.player.score = this.score;
+            }
+          }
+
+          // bots collect nuts
+          for (const b of this.bots){
+            for (let i=this.nuts.length-1;i>=0;i--){
+              const n = this.nuts[i];
+              if (dist(b, n) < b.radius + n.radius){
+                this.nuts.splice(i,1);
+                b.score = (b.score||0) + 1;
+              }
+            }
+          }
+
+          // player <-> bot collision -> lose HP and push back
+          for (const b of this.bots){
+            const d = dist(this.player, b);
+            const min = this.player.radius + b.radius;
+            if (d < min){
+              // knockback
+              const nx = (this.player.x - b.x) / (d||1);
+              const ny = (this.player.y - b.y) / (d||1);
+              this.player.x += nx * 8;
+              this.player.y += ny * 8;
+              // take damage with small cooldown (use _recentDamage flag)
+              if (!this._recentDamage){
+                this.player.applyDamage(1);
+                this._recentDamage = 0.8; // seconds
+              }
+            }
+          }
+          if (this._recentDamage !== undefined){ this._recentDamage = Math.max(0, this._recentDamage - dt); }
+
+          // update HUD
+          ui.scoreEl.textContent = String(this.score);
+          ui.timerEl.textContent = String(Math.ceil(this.remaining));
+          ui.hpEl.textContent = String(this.player.hp);
+
+          if (this.player.hp <= 0) { this.end(); return; }
+        }
+
+        draw(){
+          // clear
+          ctx.clearRect(0,0,canvas.width,canvas.height);
+
+          // subtle overlay
+          const g = ctx.createLinearGradient(0,0,0,canvas.height);
+          g.addColorStop(0,'rgba(255,255,255,0.03)');
+          g.addColorStop(1,'rgba(0,0,0,0.02)');
+          ctx.fillStyle = g;
+          ctx.fillRect(0,0,canvas.width,canvas.height);
+
+          // draw nuts
+          for (const n of this.nuts) n.draw(ctx);
+
+          // draw bots
+          for (const b of this.bots) {
+            b.draw(ctx);
+            // bot label
+            ctx.font = '12px sans-serif'; ctx.fillStyle = '#000000'; ctx.fillText('对手', b.x-20, b.y - b.radius - 8);
+          }
+
+          // draw player
+          this.player.draw(ctx);
+
+          // dash cooldown overlay
+          const x = 12, y = canvas.height - 28;
+          ctx.fillStyle = 'rgba(255,255,255,0.8)';
+          ctx.fillRect(x-6,y-18,140,28);
+          ctx.fillStyle = '#333';
+          ctx.font = '13px sans-serif';
+          ctx.fillText('冲刺冷却:', x, y);
+          const cooldown = this.player.dashCooldown / CONFIG.dashCooldown;
+          ctx.fillStyle = cooldown <= 0 ? '#27ae60' : '#e67e22';
+          ctx.fillRect(x+78, y-12, Math.max(0, Math.min(48, 48*(1-cooldown))), 10);
+          ctx.strokeStyle = '#aaa'; ctx.strokeRect(x+78, y-12, 48, 10);
+        }
+
+        loop(){
+          const now = performance.now();
+          let dt = (now - this.lastTime) / 1000;
+          dt = Math.min(0.05, dt);
+          this.lastTime = now;
+
+          this.update(dt);
+          if (this.state === 'playing') this.draw();
+
+          this.loopId = requestAnimationFrame(() => this.loop());
+        }
+      }
+
+      // ---------- 启动 ----------
+      const game = new Game();
+      game.toMenu();
+      window.__game = game;
+
+    })();
+  </script>
+</body>
+</html>
